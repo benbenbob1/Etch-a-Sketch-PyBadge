@@ -1,6 +1,3 @@
-# Information on the adafruit_bitmapsaver module here:
-# https://adafruit-circuitpython-bitmap-saver.readthedocs.io/en/latest/api.html
-import adafruit_bitmapsaver
 # Information on the adafruit_lis3dh module here:
 # https://learn.adafruit.com/adafruit-lis3dh-triple-axis-accelerometer-breakout/python-circuitpython#circuitpython-installation-of-lis3dh-library-2997957-11
 import adafruit_lis3dh
@@ -20,7 +17,6 @@ import time
 Etch-a-Sketch for the PyBadge!
 
 Required modules (instructions here: https://learn.adafruit.com/welcome-to-circuitpython/circuitpython-libraries)
-    adafruit_bitmapsaver.mpy
     adafruit_lis3dh.mpy
     adafruit_bus_device/ <- this is a folder
 
@@ -363,18 +359,6 @@ class Draw:
             for y in range(self.display_size[1]):
                 self.display_bitmap[x,y] = self.off_color_idx
 
-    def save_drawing(self):
-        """
-        Returns the name of the saved file, or False if file could not be saved
-        """
-
-        bmp_filename = "/" + str(time.time()) + ".bmp"
-        adafruit_bitmapsaver.save_pixels(
-            file_or_filename=bmp_filename,
-            pixel_source=self.display_bitmap,
-            palette=self.display_palette)
-        return bmp_filename
-
 drawer = Draw(board.DISPLAY, COLORS_RGB, 6)
 tone_player = AudioHelper(audio)
 
@@ -425,13 +409,6 @@ def on_shake():
     tone_player.play_note("C5", 0.2)
     drawer.reset()
     show_color_on_leds(COLORS_RGB[cur_color_idx], NUM_LEDS)
-
-def save():
-    result = drawer.save_drawing()
-    if result is not False:
-        print("Image saved successfully as "+str(result))
-    else:
-        print("Image save error")
 
 def main_loop():
     button_checker = ButtonPress()
