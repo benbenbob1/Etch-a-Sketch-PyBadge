@@ -1,38 +1,23 @@
+# Information on the adafruit_bitmapsaver module here:
+# https://adafruit-circuitpython-bitmap-saver.readthedocs.io/en/latest/api.html
+import adafruit_bitmapsaver
 # Information on the adafruit_lis3dh module here:
 # https://learn.adafruit.com/adafruit-lis3dh-triple-axis-accelerometer-breakout/python-circuitpython#circuitpython-installation-of-lis3dh-library-2997957-11
 import adafruit_lis3dh
+import adafruit_requests as requests
 import array
 from audioio import AudioOut
 from audiocore import RawSample
 import board
 import busio
 import digitalio
-import displayio
+from draw import Draw
 import gamepadshift
 import math
 import neopixel_write
+from secrets import secrets
 import time
-
-"""
-Etch-a-Sketch for the PyBadge!
-
-Required modules (instructions here: https://learn.adafruit.com/welcome-to-circuitpython/circuitpython-libraries)
-    adafruit_lis3dh.mpy
-    adafruit_bus_device/ <- this is a folder
-
-Buttons:
-    A    - Rotate cursor color
-    B    - Rotate cursor size
-    Dpad - Move cursor and draw
-
-    Shake device (there will be a countdown) or hold Select for 2 seconds - Reset drawing
-
-Features:
-    Shake to reset, with sound and led feedback
-    PyBadge leds will match cursor color
-    Sound and button press library for the PyBadge
-
-"""
+from wireless import Wireless
 
 NUM_LEDS = 5
 LED_BRIGHTNESS = 0.05 # 0 to 1
@@ -49,8 +34,7 @@ SHAKE_TUNE_NOTE_LEN_S = 0.2
 COLORS_RGB = [[255,255,255], [255,0,0], [255,180,0], [0,255,0], [0,0,255], [255,0,255], [0,0,0]]
 cur_color_idx = 0 # color from index of above array
 
-# Set board display brightness
-board.DISPLAY.brightness = DISPLAY_BRIGHTNESS
+board.DISPLAY.brightness = DISPLAY_BRIGHTNESS # set board display brightness
 
 # Setup accelerometer
 i2c = busio.I2C(board.SCL, board.SDA)
@@ -71,6 +55,12 @@ gp = gamepadshift.GamePadShift(clock=clock, data=data, latch=latch)
 speaker_enable = digitalio.DigitalInOut(board.SPEAKER_ENABLE)
 speaker_enable.switch_to_output(value=True)
 audio = AudioOut(board.SPEAKER)
+
+# Setup Wifi
+spi = busio.SPI(board.SCK, board.MOSI, board.MISO)
+esp32_ready = digitalio.DigitalInOut(board.D11)
+esp32_reset = digitalio.DigitalInOut(board.D12)
+esp32_cs = digitalio.DigitalInOut(board.D13)
 
 class AudioHelper:
     SPEAKER_VOLUME = 0.3 # Increase this to increase the volume of the tones
@@ -238,129 +228,8 @@ class ButtonPress:
                     self.exec_if_not_none(cur_btn.up_callback)
                     self.prev_button_status[cur_btn.name] = False
 
-class Draw:
-    """
-    Class for handling screen drawing and cursor positioning.
-    More info on displayio/bitmaps here:
-    https://learn.adafruit.com/circuitpython-display-support-using-displayio/bitmap-and-palette
-    """
-    cursor_sizes = [1, 2, 4, 8] # square cursor, this is the edge width
-    cur_cursor_idx = 1 # current cursor (size), index in above array
-    cur_cursor_size = cursor_sizes[cur_cursor_idx]
-    cursor_bitmap = None # displayio.Bitmap
-    cursor_grid = None # displayio.TileGrid
-    cursor_bitmap_size = 0 # edge length of square cursor bitmap
-
-    colors = [] # array of [r,g,b] values
-    display = None
-    display_size = (0,0)
-    display_bitmap = None # displayio.Bitmap
-    display_palette = None # displayio.Palette
-
-    cur_color_idx = 0 # color index
-    off_color_idx = -1 # index of black in above array
-    invis_color_idx = 0 # transparent, should be len(colors)+1, it is treated as an "invisible" color
-    cur_pos = (0,0)
-
-    def __init__(self, display, rgbColors=[[255,0,0], [0,0,0]], offIdx=1):
-        """
-        display should come from board.DISPLAY
-        rgbColors is array of [r,g,b] values for the color palette
-        offIdx is the index of black in above array
-        """
-
-        self.colors = rgbColors
-        self.off_color_idx = offIdx
-        self.invis_color_idx = len(self.colors) + 1
-        self.display = display
-
-        self.display_size = (self.display.width, self.display.height)
-        print("Initializing Draw with display size: " + str(self.display_size[0]) + " x " + str(self.display_size[1]))
-
-        self.display_bitmap = displayio.Bitmap(self.display_size[0], self.display_size[1], len(self.colors))
-        self.cursor_bitmap_size = max(self.cursor_sizes) # set bitmap width/height to biggest possible cursor size
-        self.cursor_bitmap = displayio.Bitmap(self.cursor_bitmap_size, self.cursor_bitmap_size, len(self.colors))
-
-        self.reset() # Setup screen and position cursor
-
-        self.display_palette = displayio.Palette(len(self.colors))
-        for c in range(len(self.colors)):
-            self.display_palette[c] = self.colors[c]
-
-        display_grid = displayio.TileGrid(self.display_bitmap, pixel_shader=self.display_palette, x=0, y=0)
-        self.cursor_grid = displayio.TileGrid(self.cursor_bitmap, pixel_shader=self.display_palette, x=0, y=0)
-        display_group = displayio.Group(max_size=2)
-        display_group.append(display_grid)
-        display_group.append(self.cursor_grid)
-        self.display.show(display_group)
-
-    def rotate_cursor(self):
-        self.cur_cursor_idx = self.cur_cursor_idx + 1
-        if self.cur_cursor_idx >= len(self.cursor_sizes):
-            self.cur_cursor_idx = 0
-
-        # If cursor is near the edge of the screen and the cursor size increases,
-        # move the cursor position to accomodate the new size
-        if self.cur_pos[0] + self.cur_cursor_size >= self.display_size[0]:
-            self.cur_pos = (self.display_size[0]-self.cur_cursor_size, self.cur_pos[1])
-        if self.cur_pos[1] + self.cur_cursor_size >= self.display_size[1]:
-            self.cur_pos = (self.cur_pos[0], self.display_size[1]-self.cur_cursor_size)
-
-        self.cur_cursor_size = self.cursor_sizes[self.cur_cursor_idx]
-
-    def draw_and_move_cursor(self, delta_X=0, delta_Y=0):
-        # Draw at new position, using current color idx
-        for x in range(self.cur_cursor_size):
-            for y in range(self.cur_cursor_size):
-                self.display_bitmap[
-                    min(self.cur_pos[0]+x, self.display_size[0]-1),
-                    min(self.cur_pos[1]+y, self.display_size[1]-1)
-                ] = self.cur_color_idx
-
-        # Change cursor position
-        if delta_X != 0:
-            new_X = self.cur_pos[0] + delta_X
-            if new_X >= 0 and new_X + (delta_X*(self.cur_cursor_size-1)) < self.display_size[0]:
-                self.cur_pos = (max(min(new_X+(delta_X*(self.cur_cursor_size-1)), self.display_size[0]-self.cur_cursor_size), 0), self.cur_pos[1])
-        if delta_Y != 0:
-            new_Y = self.cur_pos[1] + delta_Y
-            if new_Y >= 0 and new_Y + (delta_Y*(self.cur_cursor_size-1)) < self.display_size[1]:
-                self.cur_pos = (self.cur_pos[0], max(min(new_Y+(delta_Y*(self.cur_cursor_size-1)), self.display_size[1]-self.cur_cursor_size), 0))
-
-    def display_cursor(self, display=False):
-        """
-        Used for flashing the cursor to indicate current cursor position
-        """
-
-        cursor_color = self.cur_color_idx
-        if self.cur_color_idx == self.off_color_idx:
-            cursor_color = 0 # white
-        if not display:
-            cursor_color = self.off_color_idx
-        self.cursor_grid.x = self.cur_pos[0]
-        self.cursor_grid.y = self.cur_pos[1]
-        display_color = cursor_color
-        for x in range(self.cursor_bitmap_size):
-            for y in range(self.cursor_bitmap_size):
-                if (x < self.cur_cursor_size) and (y < self.cur_cursor_size):
-                    display_color = cursor_color
-                else:
-                    display_color = self.invis_color_idx
-                self.cursor_bitmap[x, y] = display_color
-
-    def set_color(self, color_idx):
-        self.cur_color_idx = color_idx
-
-    def reset(self):
-        # Start off cursor in the middle of the screen
-        self.cur_pos = (int(self.display_size[0] / 2.0), int(self.display_size[1] / 2.0))
-        # Initialize display to all black (set every pixel to black/off index)
-        for x in range(self.display_size[0]):
-            for y in range(self.display_size[1]):
-                self.display_bitmap[x,y] = self.off_color_idx
-
-drawer = Draw(board.DISPLAY, COLORS_RGB, 6)
-tone_player = AudioHelper(audio)
+drawer = None
+tone_player = None
 
 def move_up():
     drawer.draw_and_move_cursor(0,-1)
@@ -410,7 +279,16 @@ def on_shake():
     drawer.reset()
     show_color_on_leds(COLORS_RGB[cur_color_idx], NUM_LEDS)
 
+def save():
+    result = drawer.save_drawing()
+    if result is not False:
+        print("Image saved successfully as "+str(result))
+    else:
+        print("Image save error")
+
 def main_loop():
+    tone_player = AudioHelper(audio)
+
     button_checker = ButtonPress()
     button_checker.button_from_name("Up").down_callback = move_up
     button_checker.button_from_name("Down").down_callback = move_down
@@ -421,14 +299,29 @@ def main_loop():
     button_checker.button_from_name("Select").long_press_time_s = 2.0
     button_checker.button_from_name("Select").long_press_callback = on_shake
 
+    wifi = Wireless(spi, esp32_cs, esp32_ready, esp32_reset)
+    wifi_connected = wifi.try_connect(secrets['ssid'], secrets['password'], log=True)
+
     tone_player.play_note("C5", 0.2)
     tone_player.play_note("E5", 0.2)
     tone_player.play_note("G5", 0.2)
+    if (wifi_connected):
+        tone_player.play_note("A6", 0.2)
+
+    TEXT_URL = "http://wifitest.adafruit.com/testwifi/index.html"
+
+    print("Fetching text from", TEXT_URL)
+    r = requests.get(TEXT_URL)
+    print('-'*40)
+    print(r.text)
+    print('-'*40)
+    r.close()
 
     cursor_on = False
     cursor_blink_iter = 5 # cursor blink rate is cursor_blink_iter * tick rate
     cursor_blink_counter = 0
 
+    drawer = Draw(board.DISPLAY, COLORS_RGB, 6)
     drawer.display_cursor(True)
 
     ticks_per_sec = 1.0 / TICK_RATE_S
